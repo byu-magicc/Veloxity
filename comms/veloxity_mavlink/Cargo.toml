@@ -48,5 +48,9 @@ mavspec = { version = "0.6.4", default-features = false, features = ["rust"] }
 [build-dependencies]
 mavspec = { version = "0.6.4", features = ["rust_gen"] }
 
+[dev-dependencies]
+# Host test binaries need a critical-section implementation for veloxity_core's logging mutex.
+critical-section = { version = "1.2.0", features = ["std"] }
+
 [lints]
 workspace = true

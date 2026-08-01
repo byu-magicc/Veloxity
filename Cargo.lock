@@ -2539,6 +2539,7 @@ dependencies = [
 name = "veloxity_mavlink"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
  "mavio",
  "mavspec",
  "veloxity_core",

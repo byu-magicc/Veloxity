@@ -48,6 +48,25 @@ static RX_BUFF_SIZE: usize = 2048;
 const MAV_COMP_ID_ROSFLIGHT_FIRMWARE: u8 = 250;
 const MAVLINK_V1_MESSAGE_SIZE: usize = 263;
 
+// Serial-delay (RTT) timing test support. Mirrors the C firmware's
+// `jacob/timing-tests` branch, which echoes every received OFFBOARD_CONTROL frame
+// straight back over the same link before decoding it, so a companion computer can
+// time serial round trips.
+const OFFBOARD_CONTROL_MSG_ID: u8 = 180; // rosflight.xml message id="180" name="OFFBOARD_CONTROL"
+const MAVLINK_V1_MSGID_OFFSET: usize = 5;
+
+/// Retransmit `frame` verbatim if it is an OFFBOARD_CONTROL message.
+///
+/// The raw received bytes are sent back unchanged (sender's own seq/sysid/compid
+/// preserved), matching the C firmware's `send_message(*msg)` echo.
+fn echo_if_offboard_control<B: board::BoardIo>(board: &mut B, frame: &parser::CompleteFrame) {
+    if frame.len > MAVLINK_V1_MSGID_OFFSET
+        && frame.data[MAVLINK_V1_MSGID_OFFSET] == OFFBOARD_CONTROL_MSG_ID
+    {
+        board.serial_tx_write_priority(&frame.data[..frame.len], SerialTxPriority::CRITICAL);
+    }
+}
+
 pub struct MavlinkInterface {
     pub component_id: u8,
     sequence: u8,
@@ -459,6 +478,7 @@ impl<B: board::BoardIo> CommInterface<B> for MavlinkInterface {
                     };
                     mavlink_frame.data[..mavlink_frame.len]
                         .copy_from_slice(&frame.data[..mavlink_frame.len]);
+                    echo_if_offboard_control(board, &mavlink_frame);
                     if let Some(message) = parser::process_mavlink_frame(mavlink_frame) {
                         self.process_rosflight_message(message, msgs);
                     }
@@ -472,6 +492,7 @@ impl<B: board::BoardIo> CommInterface<B> for MavlinkInterface {
             Some(Ok(n)) => {
                 for i in 0..n {
                     if let Some(frame) = self.mav_parser.feed_byte(buf[i]) {
+                        echo_if_offboard_control(board, &frame);
                         if let Some(message) = parser::process_mavlink_frame(frame) {
                             self.process_rosflight_message(message, msgs);
                         }
@@ -741,6 +762,28 @@ mod tests {
         len: usize,
     }
 
+    /// Injects a framed RX message *and* captures TX bytes, so the OFFBOARD_CONTROL
+    /// echo added for the serial-delay timing test can be observed.
+    struct EchoCaptureBoard {
+        frame: Option<SerialRxFrame>,
+        tx_bytes: [u8; 280],
+        tx_len: usize,
+        tx_writes: usize,
+        last_priority: SerialTxPriority,
+    }
+
+    impl Default for EchoCaptureBoard {
+        fn default() -> Self {
+            Self {
+                frame: None,
+                tx_bytes: [0; 280],
+                tx_len: 0,
+                tx_writes: 0,
+                last_priority: SerialTxPriority::default(),
+            }
+        }
+    }
+
     struct DownlinkCaptureBoard {
         accepted_len: usize,
         enqueued: usize,
@@ -828,6 +871,55 @@ mod tests {
             self.bytes[..bytes.len()].copy_from_slice(bytes);
             self.len = bytes.len();
             Some(Ok(bytes.len()))
+        }
+
+        fn clock_millis(&self) -> u32 {
+            0
+        }
+
+        fn clock_micros(&self) -> u64 {
+            0
+        }
+    }
+
+    impl BoardIo for EchoCaptureBoard {
+        fn update_sensor_bus<R: veloxity_core::math::FlightFloat>(
+            &mut self,
+            sensors: &mut SensorBus<R>,
+        ) {
+            sensors.clear();
+        }
+
+        fn serial_rx_read(
+            &mut self,
+            _buf: &mut [u8],
+        ) -> Option<core::result::Result<usize, errors::TelemError>> {
+            Some(Ok(0))
+        }
+
+        fn serial_rx_frame_read(
+            &mut self,
+        ) -> Option<core::result::Result<SerialRxFrame, errors::TelemError>> {
+            self.frame.take().map(Ok)
+        }
+
+        fn serial_tx_write(
+            &mut self,
+            bytes: &[u8],
+        ) -> Option<core::result::Result<usize, errors::TelemError>> {
+            self.tx_bytes[..bytes.len()].copy_from_slice(bytes);
+            self.tx_len = bytes.len();
+            self.tx_writes += 1;
+            Some(Ok(bytes.len()))
+        }
+
+        fn serial_tx_write_priority(
+            &mut self,
+            bytes: &[u8],
+            priority: SerialTxPriority,
+        ) -> Option<core::result::Result<usize, errors::TelemError>> {
+            self.last_priority = priority;
+            self.serial_tx_write(bytes)
         }
 
         fn clock_millis(&self) -> u32 {
@@ -936,6 +1028,27 @@ mod tests {
         let msg = messages.offboard_control.expect("offboard message");
         assert_eq!(msg.fz, 0.85);
         assert_eq!(board.byte_reads, 1);
+    }
+
+    #[test]
+    fn offboard_control_frame_is_echoed_verbatim() {
+        let frame = offboard_control_serial_frame();
+        let mut board = EchoCaptureBoard {
+            frame: Some(frame),
+            ..Default::default()
+        };
+        let mut link = MavlinkInterface::new();
+        let mut messages = Messages::default();
+
+        link.handle_incoming_messages(&mut board, &mut messages);
+
+        assert_eq!(board.tx_writes, 1);
+        assert_eq!(board.tx_len, frame.len);
+        assert_eq!(&board.tx_bytes[..board.tx_len], &frame.data[..frame.len]);
+        assert_eq!(board.last_priority, SerialTxPriority::CRITICAL);
+        // The echo must not short-circuit normal decode + store.
+        let msg = messages.offboard_control.expect("offboard message");
+        assert_eq!(msg.fz, 0.85);
     }
 
     #[test]
