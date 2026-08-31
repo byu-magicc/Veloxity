@@ -1,0 +1,15 @@
+diff --git a/comms/mavlink/mavlink.cpp b/comms/mavlink/mavlink.cpp
+index ce17bce..95c5c3b 100644
+--- a/comms/mavlink/mavlink.cpp
++++ b/comms/mavlink/mavlink.cpp
+@@ -510,6 +510,10 @@ void Mavlink::handle_mavlink_message()
+ {
+   switch (in_buf_.msgid) {
+     case MAVLINK_MSG_ID_OFFBOARD_CONTROL:
++      // Timing-test instrumentation: echo the complete received MAVLink frame before normal
++      // processing. Reusing the parsed message preserves the ten-channel payload, sender IDs,
++      // sequence number, and checksum used by the companion-side RTT correlator.
++      send_message(in_buf_);
+       handle_msg_offboard_control(&in_buf_);
+       break;
+     case MAVLINK_MSG_ID_PARAM_REQUEST_LIST:

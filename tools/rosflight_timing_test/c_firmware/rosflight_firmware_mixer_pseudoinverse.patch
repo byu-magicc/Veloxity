@@ -1,0 +1,24 @@
+diff --git a/src/mixer.cpp b/src/mixer.cpp
+index d3f3bfc..89508c2 100644
+--- a/src/mixer.cpp
++++ b/src/mixer.cpp
+@@ -267,9 +267,17 @@ Mixer::mixer_t Mixer::invert_mixer(const mixer_t* mixer_to_invert)
+   Eigen::Matrix<float, NUM_MIXER_OUTPUTS, NUM_MIXER_OUTPUTS> Sig;
+   Sig.setZero();
+ 
+-  // Avoid dividing by zero in the Sigma matrix
++  // Treat numerically zero singular values as zero.  The canned multirotor
++  // mixers occupy only a few rows of this 10x10 matrix, so they are
++  // intentionally rank deficient.  Comparing with exactly 0.0f can invert
++  // roundoff-sized singular values and create enormous, unsafe mixer gains.
++  const float singular_value_tolerance =
++    static_cast<float>(NUM_MIXER_OUTPUTS) * Eigen::NumTraits<float>::epsilon()
++    * svd.singularValues()[0];
+   for (int i=0; i<NUM_MIXER_OUTPUTS; ++i) {
+-    if (svd.singularValues()[i] != 0.0) { Sig(i, i) = 1.0 / svd.singularValues()[i]; }
++    if (svd.singularValues()[i] > singular_value_tolerance) {
++      Sig(i, i) = 1.0f / svd.singularValues()[i];
++    }
+   }
+ 
+   // Pseudoinverse of the mixing matrix

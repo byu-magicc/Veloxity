@@ -1,0 +1,2 @@
+# A blank context line in a stored unified diff is a single leading space by design.
+**/*.patch whitespace=-blank-at-eol

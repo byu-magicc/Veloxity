@@ -1,0 +1,7 @@
+/companion/timing_overlay_ws/
+/companion/ros2_ws/build/
+/companion/ros2_ws/install/
+/companion/ros2_ws/log/
+/companion/results/
+/comparison_plots/
+/dist/rosflight_timing_companion_current_main.zip

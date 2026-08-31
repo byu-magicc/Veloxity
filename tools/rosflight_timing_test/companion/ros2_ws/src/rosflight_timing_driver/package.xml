@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rosflight_timing_driver</name>
+  <version>0.1.0</version>
+  <description>Current ten-channel ROSflight command publisher and RTT collector.</description>
+  <maintainer email="timing-test@example.com">ROSflight timing test</maintainer>
+  <license>BSD-3-Clause</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>rosflight_msgs</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

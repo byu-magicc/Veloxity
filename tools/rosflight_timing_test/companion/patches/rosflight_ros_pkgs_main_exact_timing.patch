@@ -1,0 +1,118 @@
+diff --git a/rosflight_io/include/rosflight_io/rosflight_io.hpp b/rosflight_io/include/rosflight_io/rosflight_io.hpp
+index b33c6ab..40014f4 100644
+--- a/rosflight_io/include/rosflight_io/rosflight_io.hpp
++++ b/rosflight_io/include/rosflight_io/rosflight_io.hpp
+@@ -83,6 +83,7 @@
+ #include <rosflight_msgs/msg/output_raw.hpp>
+ #include <rosflight_msgs/msg/rc_raw.hpp>
+ #include <rosflight_msgs/msg/status.hpp>
++#include <rosflight_msgs/msg/time_delay.hpp>
+ 
+ #include <rosflight_msgs/srv/param_file.hpp>
+ #include <rosflight_msgs/srv/param_get.hpp>
+@@ -325,6 +326,13 @@ private:
+    */
+   void handle_battery_status_msg(const mavlink_message_t & msg);
+ 
++  /** Handle an echoed OFFBOARD_CONTROL frame for the serial RTT experiment. */
++  void handle_offboard_control_msg(const mavlink_message_t & msg);
++
++  rclcpp::Publisher<rosflight_msgs::msg::TimeDelay>::SharedPtr serial_delay_pub_;
++  static constexpr int64_t timing_modulus_ns_ = 100'000'000;
++  static constexpr int64_t timing_split_ns_ = 10'000;
++
+   /**
+    * @brief Parses firmware and git version strings into consistent format.
+    * @param version Firmware version or ROS packages version.
+diff --git a/rosflight_io/src/rosflight_io.cpp b/rosflight_io/src/rosflight_io.cpp
+index 62abea5..e28fe9f 100644
+--- a/rosflight_io/src/rosflight_io.cpp
++++ b/rosflight_io/src/rosflight_io.cpp
+@@ -46,6 +46,7 @@
+ #include <rosflight_io/mavrosflight/mavlink_serial.hpp>
+ #include <rosflight_io/mavrosflight/mavlink_udp.hpp>
+ #include <rosflight_io/mavrosflight/serial_exception.hpp>
++#include <cmath>
+ #include <string>
+ #include <tf2/LinearMath/Matrix3x3.h> // Swap to Eigen!
+ #include <tf2/LinearMath/Quaternion.h>
+@@ -393,6 +394,9 @@ void ROSflightIO::handle_mavlink_message(const mavlink_message_t & msg)
+     case MAVLINK_MSG_ID_ROSFLIGHT_BATTERY_STATUS:
+       handle_battery_status_msg(msg);
+       break;
++    case MAVLINK_MSG_ID_OFFBOARD_CONTROL:
++      handle_offboard_control_msg(msg);
++      break;
+     default:
+       RCLCPP_DEBUG(this->get_logger(), "rosflight_io: Got unhandled mavlink message ID %d",
+                    msg.msgid);
+@@ -400,6 +404,34 @@ void ROSflightIO::handle_mavlink_message(const mavlink_message_t & msg)
+   }
+ }
+ 
++void ROSflightIO::handle_offboard_control_msg(const mavlink_message_t & msg)
++{
++  if (serial_delay_pub_ == nullptr) {
++    serial_delay_pub_ =
++      this->create_publisher<rosflight_msgs::msg::TimeDelay>("serial_time_delay_ns", 10);
++  }
++
++  mavlink_offboard_control_t offboard;
++  mavlink_msg_offboard_control_decode(&msg, &offboard);
++
++  rosflight_msgs::msg::TimeDelay output;
++  output.header.stamp = this->get_clock()->now();
++  const int64_t received_ns = this->get_clock()->now().nanoseconds() % timing_modulus_ns_;
++  const int64_t sent_ns =
++    static_cast<int64_t>(std::roundf(offboard.u[0])) * timing_split_ns_ +
++    static_cast<int64_t>(std::roundf(offboard.u[1]));
++  int64_t delay_ns = received_ns - sent_ns;
++  if (delay_ns < 0) {
++    delay_ns += timing_modulus_ns_;
++  }
++
++  output.time_delay_ns = static_cast<uint64_t>(delay_ns);
++  constexpr float id_scale = 16'777'216.0F;
++  output.sequence_id = static_cast<uint32_t>(std::roundf(offboard.u[2] * id_scale));
++  output.run_id = static_cast<uint32_t>(std::roundf(offboard.u[3] * id_scale));
++  serial_delay_pub_->publish(output);
++}
++
+ void ROSflightIO::on_new_param_received(std::string name, double value)
+ {
+   RCLCPP_DEBUG(this->get_logger(), "Got parameter %s with value %g", name.c_str(), value);
+@@ -931,6 +963,12 @@ void ROSflightIO::commandCallback(const rosflight_msgs::msg::Command::ConstShare
+     command_vect[i] = msg->u[i];
+   }
+ 
++  // Store a modulo-100 ms timestamp in two exactly representable float channels, matching the
++  // historical Figure 7 timing experiment. The firmware echoes the frame before processing it.
++  const int64_t sent_ns = this->get_clock()->now().nanoseconds() % timing_modulus_ns_;
++  command_vect[0] = static_cast<float>(sent_ns / timing_split_ns_);
++  command_vect[1] = static_cast<float>(sent_ns % timing_split_ns_);
++
+   mavlink_message_t mavlink_msg;
+   mavlink_msg_offboard_control_pack(1, 50, &mavlink_msg, mode, ignore, command_vect);
+   mavrosflight_->comm.send_message(mavlink_msg);
+diff --git a/rosflight_msgs/CMakeLists.txt b/rosflight_msgs/CMakeLists.txt
+index d92a05f..107ed41 100644
+--- a/rosflight_msgs/CMakeLists.txt
++++ b/rosflight_msgs/CMakeLists.txt
+@@ -35,6 +35,7 @@ set(msg_files
+   "msg/RGBCamera.msg"
+   "msg/Status.msg"
+   "msg/SimState.msg"
++  "msg/TimeDelay.msg"
+   )
+ 
+ # declare the service files to generate code for
+diff --git a/rosflight_msgs/msg/TimeDelay.msg b/rosflight_msgs/msg/TimeDelay.msg
+new file mode 100644
+index 0000000..f050a8a
+--- /dev/null
++++ b/rosflight_msgs/msg/TimeDelay.msg
+@@ -0,0 +1,4 @@
++std_msgs/Header header
++uint64 time_delay_ns
++uint32 sequence_id
++uint32 run_id

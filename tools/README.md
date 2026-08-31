@@ -6,6 +6,14 @@ ESP-IDF firmware project.
 
 Run Python tools from the repository root unless a script says otherwise.
 
+## Canonical ROS 2 timing test
+
+The current Raspberry Pi/Pixracer Pro serial RTT timing experiment is the
+[ROSflight timing test](rosflight_timing_test/README.md). It contains the Pi companion ZIP and
+source, the 400 Hz ROS 2 timing driver, current-main Veloxity firmware instructions, C comparison
+patches, and separate raw regular/outlier plotting tools. Use it instead of older ad hoc timing
+archives.
+
 ## Python Tools
 
 | Tool | Purpose | Typical context |

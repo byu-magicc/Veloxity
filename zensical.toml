@@ -33,7 +33,8 @@ nav = [
     #     { "link.rs" = "https://github.com/magicc-safety/Veloxity/blob/main/comms/veloxity_mavlink/src/link.rs" }
     # ] },
     { "Tutorials" = [
-        {"Veloxity with the ROSflight Simulator" = "tutorials/sim_devpod.md"}
+        {"Veloxity with the ROSflight Simulator" = "tutorials/sim_devpod.md"},
+        {"ROS 2 Pixracer Pro Serial RTT Timing" = "tutorials/ros2-pixracerpro-serial-rtt-timing.md"}
         # { "Veloxity ROScopter Sim End-to-End" = "tutorials/veloxity-roscopter-sim-end-to-end.md" },
         # { "Pico 2 W Sensor Bring-Up" = "tutorials/pico2w-sensor-bringup.md" }
     ] },

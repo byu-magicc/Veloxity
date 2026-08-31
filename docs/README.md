@@ -29,6 +29,7 @@ Because support for the Pico 2 W is experimental, we have chosen to omit includi
 
 1. [Board bring-up guide](boards/README.md)
 2. [STM32 board guide](boards/stm32.md)
+3. [Current ROS 2 Pixracer Pro serial RTT timing test](tutorials/ros2-pixracerpro-serial-rtt-timing.md)
 
 <!-- 3. [Hardware experiment 2 ROScopter startup](tutorials/hardware-exp2-roscopter-startup.md) -->
 <!-- 4. [Pico 2 W wiring](pico2w-esc-imu-pinout.md) -->
