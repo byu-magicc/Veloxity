@@ -1,3 +1,23 @@
+//! In-process Veloxity firmware for software-in-the-loop simulation.
+//!
+//! This is the safe Rust replacement for the old `ffi.rs` C ABI (the
+//! `veloxity_sim_*` `extern "C"` entry points and the `VeloxityFfi*` `repr(C)`
+//! PODs) that the C++ `veloxity_sil_board_shim` node linked against. The
+//! machinery is unchanged — the same [`SharedSensors`] IMU generation barrier,
+//! the same `veloxity-sim-firmware` worker thread running
+//! `World::realtime_scheduler_step`, the same MAVLink UDP socket, the same
+//! `$VELOXITY_SIM_PARAM_DIR` parameter store and RX trace — but it is now
+//! driven through the safe [`SimFirmware`] handle by the Rust
+//! `veloxity_sil_node` node in the same process.
+//!
+//! # Environment
+//!
+//! * `VELOXITY_SIM_PARAM_DIR` (**required**) — writable directory holding the
+//!   persisted firmware parameter store.
+//! * `VELOXITY_MAVLINK_BIND` / `VELOXITY_MAVLINK_REMOTE` — the MAVLink UDP
+//!   endpoints, defaulting to `127.0.0.1:14525` / `127.0.0.1:14520`.
+//! * `VELOXITY_SIM_RX_TRACE` — optional CSV path for the serial RX trace.
+
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::net::{SocketAddr, UdpSocket};
@@ -9,6 +29,7 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use anyhow::Context as _;
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use veloxity_core::{
     board::BoardIo,
@@ -29,53 +50,53 @@ use veloxity_core::{
 };
 use veloxity_mavlink::MavlinkInterface;
 
-const NUM_PWM_CHANNELS: usize = 14;
+/// PWM channels the firmware drives; also the width of
+/// `rosflight_msgs/PwmOutput.values`.
+pub const NUM_PWM_CHANNELS: usize = 14;
 const DEFAULT_MAVLINK_BIND: &str = "127.0.0.1:14525";
 const DEFAULT_MAVLINK_REMOTE: &str = "127.0.0.1:14520";
 const PARAM_DIR_ENV: &str = "VELOXITY_SIM_PARAM_DIR";
 const PARAM_STORE_FILE: &str = "veloxity_sim.params";
-const FIRMWARE_SYNC_TIMEOUT: Duration = Duration::from_millis(5);
+const FIRMWARE_THREAD_NAME: &str = "veloxity-sim-firmware";
+/// How long [`SimFirmware::sync_latest_imu`] waits for the worker to consume
+/// the newest IMU sample before reporting a missed frame.
+pub const FIRMWARE_SYNC_TIMEOUT: Duration = Duration::from_millis(5);
 const SIM_CONTROL_LOOP_HZ: u16 = 400;
 const SIM_TELEMETRY_STREAMS_PER_SERVICE_PHASE: usize = 2;
 const SIM_RX_TRACE_ENV: &str = "VELOXITY_SIM_RX_TRACE";
 const MAVLINK_OFFBOARD_CONTROL_MESSAGE_ID: u32 = 180;
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VeloxityFfiVector3 {
+pub struct Vector3 {
     pub x: f64,
     pub y: f64,
     pub z: f64,
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VeloxityFfiImu {
+pub struct ImuSample {
     pub timestamp_us: u64,
-    pub angular_velocity: VeloxityFfiVector3,
-    pub linear_acceleration: VeloxityFfiVector3,
+    pub angular_velocity: Vector3,
+    pub linear_acceleration: Vector3,
     pub temperature_kelvin: f32,
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VeloxityFfiMag {
+pub struct MagSample {
     pub timestamp_us: u64,
-    pub magnetic_field: VeloxityFfiVector3,
+    pub magnetic_field: Vector3,
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VeloxityFfiBaro {
+pub struct BaroSample {
     pub timestamp_us: u64,
     pub altitude: f32,
     pub pressure: f32,
     pub temperature_kelvin: f32,
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VeloxityFfiGnss {
+pub struct GnssSample {
     pub timestamp_us: u64,
     pub fix_type: u8,
     pub num_sat: u8,
@@ -92,40 +113,36 @@ pub struct VeloxityFfiGnss {
     pub unix_nanos: i32,
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VeloxityFfiAirspeed {
+pub struct AirspeedSample {
     pub timestamp_us: u64,
     pub differential_pressure: f32,
     pub temperature_kelvin: f32,
     pub indicated_airspeed: f32,
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VeloxityFfiRange {
+pub struct RangeSample {
     pub timestamp_us: u64,
     pub range: f32,
     pub min_range: f32,
     pub max_range: f32,
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VeloxityFfiBattery {
+pub struct BatterySample {
     pub timestamp_us: u64,
     pub voltage: f32,
     pub current: f32,
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct VeloxityFfiRc {
+pub struct RcSample {
     pub timestamp_us: u64,
     pub values: [u16; 8],
 }
 
-impl Default for VeloxityFfiRc {
+impl Default for RcSample {
     fn default() -> Self {
         Self {
             timestamp_us: 0,
@@ -134,39 +151,38 @@ impl Default for VeloxityFfiRc {
     }
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VeloxityFfiSensorSnapshot {
+pub struct SensorSnapshot {
     pub has_imu: bool,
-    pub imu: VeloxityFfiImu,
+    pub imu: ImuSample,
     pub has_mag: bool,
-    pub mag: VeloxityFfiMag,
+    pub mag: MagSample,
     pub has_baro: bool,
-    pub baro: VeloxityFfiBaro,
+    pub baro: BaroSample,
     pub has_gnss: bool,
-    pub gnss: VeloxityFfiGnss,
+    pub gnss: GnssSample,
     pub has_airspeed: bool,
-    pub airspeed: VeloxityFfiAirspeed,
+    pub airspeed: AirspeedSample,
     pub has_range: bool,
-    pub range: VeloxityFfiRange,
+    pub range: RangeSample,
     pub has_battery: bool,
-    pub battery: VeloxityFfiBattery,
+    pub battery: BatterySample,
     pub has_rc: bool,
-    pub rc: VeloxityFfiRc,
+    pub rc: RcSample,
 }
 
 #[derive(Default)]
 struct SharedSensors {
     // Mirrors the hardware Signal slots: each value remains pending until the board consumes it,
     // while a newer value replaces an older unconsumed value.
-    pending: VeloxityFfiSensorSnapshot,
+    pending: SensorSnapshot,
     latest_imu_generation: u64,
     pending_imu_generation: u64,
     consumed_imu_generation: u64,
 }
 
 impl SharedSensors {
-    fn merge(&mut self, incoming: VeloxityFfiSensorSnapshot) {
+    fn merge(&mut self, incoming: SensorSnapshot) {
         macro_rules! replace_pending {
             ($has:ident, $value:ident) => {
                 if incoming.$has {
@@ -195,7 +211,7 @@ impl SharedSensors {
         self.pending.has_imu
     }
 
-    fn take_imu(&mut self) -> Option<VeloxityFfiImu> {
+    fn take_imu(&mut self) -> Option<ImuSample> {
         if !self.pending.has_imu {
             return None;
         }
@@ -204,7 +220,7 @@ impl SharedSensors {
         Some(self.pending.imu)
     }
 
-    fn take_snapshot(&mut self, include_imu: bool) -> VeloxityFfiSensorSnapshot {
+    fn take_snapshot(&mut self, include_imu: bool) -> SensorSnapshot {
         let mut snapshot = self.pending;
         if include_imu && snapshot.has_imu {
             self.pending.has_imu = false;
@@ -240,13 +256,13 @@ impl Default for FirmwareProgress {
 }
 
 #[derive(Clone)]
-struct FfiPwmDriver {
+struct SimPwmDriver {
     outputs: Arc<Mutex<[u16; NUM_PWM_CHANNELS]>>,
     output_rates_hz: [f64; NUM_PWM_CHANNELS],
     output_protocols: [PwmOutputProtocol; NUM_PWM_CHANNELS],
 }
 
-impl FfiPwmDriver {
+impl SimPwmDriver {
     fn new(outputs: Arc<Mutex<[u16; NUM_PWM_CHANNELS]>>) -> Self {
         Self {
             outputs,
@@ -268,7 +284,7 @@ impl FfiPwmDriver {
     }
 }
 
-impl PwmDriver<f64> for FfiPwmDriver {
+impl PwmDriver<f64> for SimPwmDriver {
     fn len(&self) -> usize {
         NUM_PWM_CHANNELS
     }
@@ -351,7 +367,7 @@ impl PwmDriver<f64> for FfiPwmDriver {
     }
 }
 
-struct FfiBoard {
+struct SimBoard {
     start_time: Instant,
     mavlink_socket: UdpSocket,
     sensors: Arc<Mutex<SharedSensors>>,
@@ -366,7 +382,7 @@ struct FfiBoard {
     rx_trace: Option<BufWriter<fs::File>>,
 }
 
-impl FfiBoard {
+impl SimBoard {
     fn new(sensors: Arc<Mutex<SharedSensors>>, start_time: Instant) -> io::Result<Self> {
         let bind_addr: SocketAddr = std::env::var("VELOXITY_MAVLINK_BIND")
             .unwrap_or_else(|_| DEFAULT_MAVLINK_BIND.into())
@@ -456,7 +472,7 @@ fn count_mavlink_frames(bytes: &[u8]) -> (usize, usize) {
     (frame_count, offboard_count)
 }
 
-impl FfiBoard {
+impl SimBoard {
     fn update_sensor_bus_impl<R: FlightFloat>(
         &mut self,
         sensors: &mut SensorBus<R>,
@@ -469,7 +485,7 @@ impl FfiBoard {
         let snapshot = shared.take_snapshot(include_imu);
 
         if snapshot.has_imu {
-            sensors.imu = Some(Ok(ffi_imu_packet(snapshot.imu)));
+            sensors.imu = Some(Ok(imu_packet(snapshot.imu)));
         }
 
         if snapshot.has_mag && snapshot.mag.timestamp_us > self.last_mag_timestamp_us {
@@ -596,7 +612,7 @@ impl FfiBoard {
     }
 }
 
-impl BoardIo for FfiBoard {
+impl BoardIo for SimBoard {
     fn update_sensor_bus<R: FlightFloat>(&mut self, sensors: &mut SensorBus<R>) {
         self.update_sensor_bus_impl(sensors, true);
     }
@@ -615,7 +631,7 @@ impl BoardIo for FfiBoard {
             return;
         };
         if let Some(imu) = shared.take_imu() {
-            sensors.imu = Some(Ok(ffi_imu_packet(imu)));
+            sensors.imu = Some(Ok(imu_packet(imu)));
         }
     }
 
@@ -661,7 +677,7 @@ impl BoardIo for FfiBoard {
     }
 }
 
-fn ffi_imu_packet<R: FlightFloat>(imu: VeloxityFfiImu) -> packets::ImuPacket<R> {
+fn imu_packet<R: FlightFloat>(imu: ImuSample) -> packets::ImuPacket<R> {
     packets::ImuPacket {
         header: packets::RosflightPacketHeader {
             timestamp: imu.timestamp_us,
@@ -682,17 +698,22 @@ fn ffi_imu_packet<R: FlightFloat>(imu: VeloxityFfiImu) -> packets::ImuPacket<R> 
     }
 }
 
-type FfiWorld = World<
-    FfiBoard,
+type SimWorld = World<
+    SimBoard,
     QuadEstimator<f64>,
     QuadController<f64>,
     MatrixMixer<f64>,
     MavlinkInterface,
-    FfiPwmDriver,
+    SimPwmDriver,
     f64,
 >;
 
-pub struct VeloxityFfiHandle {
+/// A running Veloxity firmware instance: the `veloxity-sim-firmware` worker
+/// thread plus the shared state the ROS 2 node exchanges sensor samples and
+/// PWM outputs through.
+///
+/// Dropping the handle stops the worker and joins it.
+pub struct SimFirmware {
     sensors: Arc<Mutex<SharedSensors>>,
     progress: Arc<(Mutex<FirmwareProgress>, Condvar)>,
     shutdown: Arc<AtomicBool>,
@@ -700,7 +721,7 @@ pub struct VeloxityFfiHandle {
     worker: Option<JoinHandle<()>>,
 }
 
-impl Drop for VeloxityFfiHandle {
+impl Drop for SimFirmware {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
         self.progress.1.notify_all();
@@ -710,71 +731,124 @@ impl Drop for VeloxityFfiHandle {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn veloxity_sim_create() -> *mut VeloxityFfiHandle {
-    let sensors = Arc::new(Mutex::new(SharedSensors::default()));
-    let outputs = Arc::new(Mutex::new([1000; NUM_PWM_CHANNELS]));
-    let progress = Arc::new((Mutex::new(FirmwareProgress::default()), Condvar::new()));
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let start_time = Instant::now();
+impl SimFirmware {
+    /// Start the firmware: bind the MAVLink UDP socket, load the persisted
+    /// parameter store, and spawn the realtime scheduler worker thread.
+    ///
+    /// The C ABI this replaced reported every one of these failures as a null
+    /// handle; each now carries the reason it failed.
+    pub fn new() -> anyhow::Result<Self> {
+        let sensors = Arc::new(Mutex::new(SharedSensors::default()));
+        let outputs = Arc::new(Mutex::new([1000; NUM_PWM_CHANNELS]));
+        let progress = Arc::new((Mutex::new(FirmwareProgress::default()), Condvar::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let start_time = Instant::now();
 
-    let Ok(mut board) = FfiBoard::new(Arc::clone(&sensors), start_time) else {
-        return std::ptr::null_mut();
-    };
+        let mut board = SimBoard::new(Arc::clone(&sensors), start_time)
+            .context("cannot start the Veloxity SIL board")?;
 
-    let mut params = Params::new();
-    let _ = board.read_params(&mut params);
-    let estimator = QuadEstimator::default();
-    let controller = QuadController::default();
-    let mixer = MatrixMixer::new(&params);
-    let mavlink = MavlinkInterface::new();
-    let state = StateManager::new();
-    let pwm = FfiPwmDriver::new(Arc::clone(&outputs));
+        let mut params = Params::new();
+        let _ = board.read_params(&mut params);
+        let estimator = QuadEstimator::default();
+        let controller = QuadController::default();
+        let mixer = MatrixMixer::new(&params);
+        let mavlink = MavlinkInterface::new();
+        let state = StateManager::new();
+        let pwm = SimPwmDriver::new(Arc::clone(&outputs));
 
-    let mut world = FfiWorld::init(
-        board, params, mavlink, state, estimator, controller, mixer, pwm,
-    );
-    world.set_control_loop_rates(ControlLoopRates::fixed_rate_hz(SIM_CONTROL_LOOP_HZ));
+        let mut world = SimWorld::init(
+            board, params, mavlink, state, estimator, controller, mixer, pwm,
+        );
+        world.set_control_loop_rates(ControlLoopRates::fixed_rate_hz(SIM_CONTROL_LOOP_HZ));
 
-    let worker_sensors = Arc::clone(&sensors);
-    let worker_outputs = Arc::clone(&outputs);
-    let worker_progress = Arc::clone(&progress);
-    let worker_shutdown = Arc::clone(&shutdown);
-    let Ok(worker) = thread::Builder::new()
-        .name("veloxity-sim-firmware".into())
-        .spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_firmware_worker(
-                    world,
-                    worker_sensors,
-                    worker_outputs,
-                    Arc::clone(&worker_progress),
-                    Arc::clone(&worker_shutdown),
-                );
-            }));
-            if result.is_err() {
-                if let Ok(mut progress) = worker_progress.0.lock() {
-                    progress.worker_failed = true;
+        let worker_sensors = Arc::clone(&sensors);
+        let worker_outputs = Arc::clone(&outputs);
+        let worker_progress = Arc::clone(&progress);
+        let worker_shutdown = Arc::clone(&shutdown);
+        let worker = thread::Builder::new()
+            .name(FIRMWARE_THREAD_NAME.into())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_firmware_worker(
+                        world,
+                        worker_sensors,
+                        worker_outputs,
+                        Arc::clone(&worker_progress),
+                        Arc::clone(&worker_shutdown),
+                    );
+                }));
+                if result.is_err() {
+                    if let Ok(mut progress) = worker_progress.0.lock() {
+                        progress.worker_failed = true;
+                    }
+                    worker_progress.1.notify_all();
+                    worker_shutdown.store(true, Ordering::Release);
                 }
-                worker_progress.1.notify_all();
-                worker_shutdown.store(true, Ordering::Release);
-            }
-        })
-    else {
-        return std::ptr::null_mut();
-    };
+            })
+            .with_context(|| format!("cannot spawn the `{FIRMWARE_THREAD_NAME}` thread"))?;
 
-    Box::into_raw(Box::new(VeloxityFfiHandle {
-        sensors,
-        progress,
-        shutdown,
-        start_time,
-        worker: Some(worker),
-    }))
+        Ok(Self {
+            sensors,
+            progress,
+            shutdown,
+            start_time,
+            worker: Some(worker),
+        })
+    }
+
+    /// Hand a batch of fresh sensor samples to the firmware. Each `has_*` slot
+    /// that is set replaces the pending value for that sensor; an IMU sample
+    /// also bumps the generation the [`SimFirmware::sync_latest_imu`] barrier
+    /// waits on. Returns `false` only if the shared state is poisoned.
+    pub fn set_sensors(&self, snapshot: &SensorSnapshot) -> bool {
+        let Ok(mut sensors) = self.sensors.lock() else {
+            return false;
+        };
+        sensors.merge(*snapshot);
+        true
+    }
+
+    /// Block until the worker has processed the most recent IMU sample, or for
+    /// at most [`FIRMWARE_SYNC_TIMEOUT`]. Returns `true` when the firmware
+    /// caught up (including the case where no IMU sample has ever arrived).
+    pub fn sync_latest_imu(&self) -> bool {
+        let target_generation = match self.sensors.lock() {
+            Ok(sensors) => sensors.latest_imu_generation,
+            Err(_) => return false,
+        };
+        if target_generation == 0 {
+            return true;
+        }
+
+        wait_for_imu_generation(
+            &self.progress,
+            &self.shutdown,
+            target_generation,
+            FIRMWARE_SYNC_TIMEOUT,
+        )
+    }
+
+    /// Copy the latest PWM outputs into `output`, returning how many channels
+    /// were written (`min(output.len(), NUM_PWM_CHANNELS)`), or 0 if the
+    /// shared state is poisoned.
+    pub fn pwm(&self, output: &mut [u16]) -> usize {
+        let Ok(progress) = self.progress.0.lock() else {
+            return 0;
+        };
+        let copy_len = output.len().min(progress.pwm_outputs.len());
+        output[..copy_len].copy_from_slice(&progress.pwm_outputs[..copy_len]);
+        copy_len
+    }
+
+    /// Microseconds since the firmware started — the FCU clock the sensor
+    /// timestamps are stamped with.
+    pub fn clock_micros(&self) -> u64 {
+        self.start_time.elapsed().as_micros() as u64
+    }
 }
 
 fn run_firmware_worker(
-    mut world: FfiWorld,
+    mut world: SimWorld,
     sensors: Arc<Mutex<SharedSensors>>,
     outputs: Arc<Mutex<[u16; NUM_PWM_CHANNELS]>>,
     progress: Arc<(Mutex<FirmwareProgress>, Condvar)>,
@@ -823,53 +897,6 @@ fn run_firmware_worker(
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn veloxity_sim_destroy(handle: *mut VeloxityFfiHandle) {
-    if !handle.is_null() {
-        drop(unsafe { Box::from_raw(handle) });
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn veloxity_sim_set_sensors(
-    handle: *const VeloxityFfiHandle,
-    snapshot: *const VeloxityFfiSensorSnapshot,
-) -> bool {
-    if handle.is_null() || snapshot.is_null() {
-        return false;
-    }
-
-    let handle = unsafe { &*handle };
-    let Ok(mut sensors) = handle.sensors.lock() else {
-        return false;
-    };
-    sensors.merge(unsafe { *snapshot });
-    true
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn veloxity_sim_sync_latest_imu(handle: *const VeloxityFfiHandle) -> bool {
-    if handle.is_null() {
-        return false;
-    }
-
-    let handle = unsafe { &*handle };
-    let target_generation = match handle.sensors.lock() {
-        Ok(sensors) => sensors.latest_imu_generation,
-        Err(_) => return false,
-    };
-    if target_generation == 0 {
-        return true;
-    }
-
-    wait_for_imu_generation(
-        &handle.progress,
-        &handle.shutdown,
-        target_generation,
-        FIRMWARE_SYNC_TIMEOUT,
-    )
-}
-
 fn wait_for_imu_generation(
     progress: &(Mutex<FirmwareProgress>, Condvar),
     shutdown: &AtomicBool,
@@ -893,36 +920,6 @@ fn wait_for_imu_generation(
     !progress_guard.worker_failed
         && !shutdown.load(Ordering::Acquire)
         && progress_guard.processed_imu_generation >= target_generation
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn veloxity_sim_get_pwm(
-    handle: *const VeloxityFfiHandle,
-    output: *mut u16,
-    output_len: usize,
-) -> usize {
-    if handle.is_null() || output.is_null() {
-        return 0;
-    }
-
-    let handle = unsafe { &*handle };
-    let Ok(progress) = handle.progress.0.lock() else {
-        return 0;
-    };
-    let copy_len = output_len.min(progress.pwm_outputs.len());
-    unsafe {
-        std::ptr::copy_nonoverlapping(progress.pwm_outputs.as_ptr(), output, copy_len);
-    }
-    copy_len
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn veloxity_sim_clock_micros(handle: *const VeloxityFfiHandle) -> u64 {
-    if handle.is_null() {
-        return 0;
-    }
-    let handle = unsafe { &*handle };
-    handle.start_time.elapsed().as_micros() as u64
 }
 
 fn param_store_path() -> io::Result<PathBuf> {
@@ -964,16 +961,16 @@ fn write_params_to_path(path: &Path, params: &Params) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    static FFI_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    fn imu_snapshot(timestamp_us: u64) -> VeloxityFfiSensorSnapshot {
-        VeloxityFfiSensorSnapshot {
+    fn imu_snapshot(timestamp_us: u64) -> SensorSnapshot {
+        SensorSnapshot {
             has_imu: true,
-            imu: VeloxityFfiImu {
+            imu: ImuSample {
                 timestamp_us,
-                ..VeloxityFfiImu::default()
+                ..ImuSample::default()
             },
-            ..VeloxityFfiSensorSnapshot::default()
+            ..SensorSnapshot::default()
         }
     }
 
@@ -1001,7 +998,7 @@ mod tests {
     fn imu_remains_pending_until_consumed() {
         let mut sensors = SharedSensors::default();
         sensors.merge(imu_snapshot(10));
-        sensors.merge(VeloxityFfiSensorSnapshot::default());
+        sensors.merge(SensorSnapshot::default());
 
         assert!(sensors.imu_pending());
         assert_eq!(sensors.latest_imu_generation, 1);
@@ -1026,9 +1023,9 @@ mod tests {
     fn service_snapshot_does_not_consume_pending_imu() {
         let mut sensors = SharedSensors::default();
         sensors.merge(imu_snapshot(10));
-        sensors.merge(VeloxityFfiSensorSnapshot {
+        sensors.merge(SensorSnapshot {
             has_rc: true,
-            ..VeloxityFfiSensorSnapshot::default()
+            ..SensorSnapshot::default()
         });
 
         let service_snapshot = sensors.take_snapshot(false);
@@ -1075,13 +1072,13 @@ mod tests {
 
     #[test]
     fn firmware_worker_processes_imu_and_shuts_down_cleanly() {
-        let _env_guard = FFI_ENV_LOCK.lock().unwrap();
+        let _env_guard = ENV_LOCK.lock().unwrap();
         let bind_probe = UdpSocket::bind("127.0.0.1:0").unwrap();
         let bind_addr = bind_probe.local_addr().unwrap();
         drop(bind_probe);
         let remote = UdpSocket::bind("127.0.0.1:0").unwrap();
         let param_dir = std::env::temp_dir().join(format!(
-            "veloxity-ffi-test-{}-{}",
+            "veloxity-runtime-test-{}-{}",
             std::process::id(),
             bind_addr.port()
         ));
@@ -1099,22 +1096,57 @@ mod tests {
             std::env::set_var(PARAM_DIR_ENV, &param_dir);
         }
 
-        let handle = veloxity_sim_create();
-        assert!(!handle.is_null());
-        let snapshot = imu_snapshot(unsafe { veloxity_sim_clock_micros(handle) }.max(1));
-        assert!(unsafe { veloxity_sim_set_sensors(handle, &snapshot) });
-        assert!(unsafe { veloxity_sim_sync_latest_imu(handle) });
+        let firmware = SimFirmware::new().unwrap();
+        let snapshot = imu_snapshot(firmware.clock_micros().max(1));
+        assert!(firmware.set_sensors(&snapshot));
+        assert!(firmware.sync_latest_imu());
         let mut pwm = [0_u16; NUM_PWM_CHANNELS];
-        assert_eq!(
-            unsafe { veloxity_sim_get_pwm(handle, pwm.as_mut_ptr(), pwm.len()) },
-            NUM_PWM_CHANNELS
-        );
-        unsafe { veloxity_sim_destroy(handle) };
+        assert_eq!(firmware.pwm(&mut pwm), NUM_PWM_CHANNELS);
+        drop(firmware);
 
         restore_env("VELOXITY_MAVLINK_BIND", previous_bind);
         restore_env("VELOXITY_MAVLINK_REMOTE", previous_remote);
         restore_env(PARAM_DIR_ENV, previous_param_dir);
         fs::remove_dir_all(param_dir).unwrap();
+    }
+
+    /// The old C ABI reported a missing parameter directory as a null handle;
+    /// the safe constructor has to say what went wrong instead. Both MAVLink
+    /// endpoints are still pointed at ephemeral ports, so this test never
+    /// competes for the default 14525/14520 pair.
+    #[test]
+    fn missing_parameter_directory_is_a_descriptive_error() {
+        let _env_guard = ENV_LOCK.lock().unwrap();
+        let bind_probe = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let bind_addr = bind_probe.local_addr().unwrap();
+        drop(bind_probe);
+        let remote = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let previous_bind = std::env::var_os("VELOXITY_MAVLINK_BIND");
+        let previous_remote = std::env::var_os("VELOXITY_MAVLINK_REMOTE");
+        let previous_param_dir = std::env::var_os(PARAM_DIR_ENV);
+
+        unsafe {
+            std::env::set_var("VELOXITY_MAVLINK_BIND", bind_addr.to_string());
+            std::env::set_var(
+                "VELOXITY_MAVLINK_REMOTE",
+                remote.local_addr().unwrap().to_string(),
+            );
+            std::env::remove_var(PARAM_DIR_ENV);
+        }
+
+        let rendered = match SimFirmware::new() {
+            Ok(_) => panic!("a missing param dir must fail"),
+            Err(error) => format!("{error:#}"),
+        };
+
+        restore_env("VELOXITY_MAVLINK_BIND", previous_bind);
+        restore_env("VELOXITY_MAVLINK_REMOTE", previous_remote);
+        restore_env(PARAM_DIR_ENV, previous_param_dir);
+
+        assert!(
+            rendered.contains("VELOXITY_SIM_PARAM_DIR"),
+            "the error must name the variable to set, got {rendered:?}"
+        );
     }
 
     fn restore_env(name: &str, value: Option<std::ffi::OsString>) {

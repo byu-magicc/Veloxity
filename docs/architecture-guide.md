@@ -78,7 +78,10 @@ Veloxity/
     ├── firmware/
     │   └── src/
     │       ├── lib.rs
-    │       └── ffi.rs
+    │       └── runtime.rs
+    ├── node/
+    │   └── src/
+    │       └── main.rs
     └── ros2/
         └── veloxity_sil_board_shim/
 ```
@@ -481,61 +484,68 @@ The simulator is an adapter around the same `World` used by hardware targets.
 
 ```text
 ROS 2 topics
-└── veloxity_sil_board C++ callbacks
-    └── veloxity_sim_set_sensors
+└── veloxity_sil_board sensor subscriptions (Hiroz, same process)
+    └── SimFirmware::set_sensors
         └── shared Rust sensor state
             └── Rust firmware worker thread
                 ├── realtime_scheduler_step
                 ├── estimator / controller / mixer
                 └── shared PWM outputs
                     └── sil_board/run
-                        ├── veloxity_sim_sync_latest_imu
-                        ├── veloxity_sim_get_pwm
+                        ├── SimFirmware::sync_latest_imu
+                        ├── SimFirmware::pwm
                         └── publish sim/pwm_output
 ```
 
-### Rust FFI Handle
+### `sim::runtime::SimFirmware`
 
-`veloxity_sim_create`:
+`SimFirmware::new()`:
 
 1. creates shared sensor and PWM storage;
-2. constructs `FfiBoard`, `FfiPwmDriver`, and `World`;
+2. constructs `SimBoard`, `SimPwmDriver`, and `World`;
 3. configures the simulator control loop for `400 Hz`;
 4. starts the `veloxity-sim-firmware` worker thread;
-5. returns an opaque `VeloxityFfiHandle` to C++.
+5. returns a safe `SimFirmware` handle — construction failures are `anyhow::Error`s that name what
+   went wrong, not a null handle.
 
-The current C ABI is:
+The handle's surface (`sim/firmware/src/runtime.rs`) is:
 
-| Function | Purpose |
+| Method | Purpose |
 | --- | --- |
-| `veloxity_sim_create` | Creates one simulator firmware instance and starts its worker thread. |
-| `veloxity_sim_destroy` | Stops the worker and destroys the instance. |
-| `veloxity_sim_set_sensors` | Merges a sensor snapshot into shared firmware input. |
-| `veloxity_sim_sync_latest_imu` | Waits until the worker has processed the latest submitted IMU generation. |
-| `veloxity_sim_get_pwm` | Copies the most recent PWM outputs into a caller-provided array. |
-| `veloxity_sim_clock_micros` | Returns the firmware instance's monotonic time since creation. |
+| `SimFirmware::new` | Creates one simulator firmware instance and starts its worker thread. |
+| `SimFirmware`'s `Drop` | Stops the worker and joins it. |
+| `SimFirmware::set_sensors` | Merges a sensor snapshot into shared firmware input. |
+| `SimFirmware::sync_latest_imu` | Waits until the worker has processed the latest submitted IMU generation. |
+| `SimFirmware::pwm` | Copies the most recent PWM outputs into a caller-provided slice. |
+| `SimFirmware::clock_micros` | Returns the firmware instance's monotonic time since creation. |
 
-The C++ shim does not call a Rust “run once” function. Firmware scheduling runs continuously on the
-Rust worker. The ROS service synchronizes with that worker before reading PWM.
+`veloxity_sil_board` never calls a "run once" function. Firmware scheduling runs continuously on the
+Rust worker thread; the ROS service synchronizes with that worker before reading PWM.
 
-### ROS 2 Shim
+### ROS 2 Node
 
-`veloxity_sil_board` provides:
+`veloxity_sil_board` (`sim/node`, crate `veloxity_sil_node`) is a plain Rust binary speaking ROS 2
+natively through Hiroz, in the same process as `SimFirmware` — no rclcpp, no C ABI, no generated
+bindings to keep in sync. It provides:
 
 - the `sil_board/run` service expected by `rosflight_sil_manager`;
 - a `sim/pwm_output` publisher;
 - subscriptions for IMU, IMU temperature, magnetometer, barometer, GNSS, differential pressure,
   range, battery, and RC.
 
-Each primary sensor callback constructs a zero-initialized `VeloxityFfiSensorSnapshot`, marks the
-newly received sensor as present, and submits it to the Rust firmware input. Sensor timestamps come
-from the firmware instance's monotonic clock—the same clock used by `FfiBoard`—so they are not
-affected by changes to the computer's wall clock. The IMU-temperature callback is the exception: it
-caches the latest temperature for the next IMU snapshot.
+Two tokio tasks split work the old single-threaded rclcpp executor used to interleave on one thread:
+the run service (`async_take_request` → gap bookkeeping → `block_in_place(sync_latest_imu)` →
+publish → reply) and the sensor pump (a `select!` over the nine subscriptions). Each primary sensor
+callback builds a `SensorSnapshot`, marks the newly received sensor as present, and hands it to
+`SimFirmware::set_sensors`. Sensor timestamps come from the firmware instance's monotonic
+clock—the same clock used by `SimBoard`—so they are not affected by changes to the computer's wall
+clock. The IMU-temperature callback is the exception: it caches the latest temperature for the next
+IMU snapshot.
 
-When `sil_board/run` is called, the shim waits for the newest IMU to be processed, retrieves the
+When `sil_board/run` is called, the node waits for the newest IMU to be processed, retrieves the
 latest PWM array, and publishes it. Warnings report long service gaps, slow synchronization, or
-unexpected output sizes.
+unexpected output sizes — the same text and thresholds the old C++ node used, since the flight
+scripts grep for them.
 
 `VELOXITY_SIM_PARAM_DIR` must identify a writable parameter directory before the firmware instance
 is created.
@@ -602,13 +612,12 @@ Runtime-specific behavior should normally be implemented through `BoardIo`, `Pwm
 ### Simulator
 
 ```text
-1. sim/ros2/veloxity_sil_board_shim/src/veloxity_sil_board.cpp
-2. sim/ros2/veloxity_sil_board_shim/include/veloxity_sil_board_shim/veloxity_ffi.h
-3. sim/firmware/src/ffi.rs
-4. crates/veloxity_core/src/world/control.rs
-5. crates/veloxity_core/src/world/service.rs
-6. crates/veloxity_core/src/control.rs
-7. comms/veloxity_mavlink/src/
+1. sim/node/src/main.rs
+2. sim/firmware/src/runtime.rs
+3. crates/veloxity_core/src/world/control.rs
+4. crates/veloxity_core/src/world/service.rs
+5. crates/veloxity_core/src/control.rs
+6. comms/veloxity_mavlink/src/
 ```
 
 ### STM32 Boards

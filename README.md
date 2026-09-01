@@ -80,7 +80,7 @@ ros2 launch veloxity_sil_board_shim multirotor_standalone_sil.launch.py use_rviz
 
 The script builds:
 
-- `target/debug/libsim.a`
+- `target/release/veloxity_sil_board`
 - `workspace/install/veloxity_sil_board_shim`
 
 Generated local artifacts can be removed with:

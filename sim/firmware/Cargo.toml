@@ -7,12 +7,13 @@ edition = "2024"
 default = []
 
 [lib]
-crate-type = ["rlib", "staticlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 veloxity_core = { workspace = true }
 veloxity_mavlink = { workspace = true }
 
+anyhow = "1"
 chrono = { version = "0.4" }
 critical-section = { version = "1.2.0", features = ["std"] }
 

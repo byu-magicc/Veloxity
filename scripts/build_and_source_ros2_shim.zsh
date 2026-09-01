@@ -31,19 +31,19 @@ if [[ ! -d "${SHIM_PACKAGE_PATH}" ]]; then
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then
-  _veloxity_abort "cargo is required to build the Veloxity simulator static library." || return $?
+  _veloxity_abort "cargo is required to build the veloxity_sil_board node." || return $?
 fi
 
 if ! command -v colcon >/dev/null 2>&1; then
   _veloxity_abort "colcon is required to build veloxity_sil_board_shim." || return $?
 fi
 
-print -P "%F{cyan}building Veloxity simulator static library%f"
+print -P "%F{cyan}building the veloxity_sil_board node%f"
 if ! (
   cd "${VELOXITY_ROOT}"
-  cargo xtask build-sim-lib
+  cargo xtask build-sil-node
 ); then
-  _veloxity_abort "failed to build Veloxity simulator static library." || return $?
+  _veloxity_abort "failed to build the veloxity_sil_board node." || return $?
 fi
 
 PACKAGE_BUILD_DIR="${COLCON_BUILD_BASE}/veloxity_sil_board_shim"

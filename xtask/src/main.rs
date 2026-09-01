@@ -74,7 +74,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        "build-sim-lib" => cargo(["build", "-p", "sim", "--lib", "--release"]),
+        "build-sil-node" => cargo(["build", "-p", "veloxity_sil_node", "--release"]),
         "clean-generated" => clean_generated(),
         _ => {
             eprintln!("unknown command `{command}`");
@@ -296,7 +296,7 @@ fn print_usage() {
                             Pixracer Pro: release UART by default; opt in with\n\
                             --vcp, --scope-timing-pins, --sensor-poll-diagnostics,\n\
                             or --runtime-diagnostics\n\
-           build-sim-lib    build the simulator static library for ROS 2\n\
+           build-sil-node   build the veloxity_sil_board ROS 2 node\n\
            clean-generated  remove ignored local build/runtime artifacts"
     );
 }

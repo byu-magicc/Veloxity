@@ -1,0 +1,33 @@
+[package]
+name = "veloxity_sil_node"
+version = "0.1.0"
+edition = "2024"
+description = "Pure-Rust Hiroz ROS 2 node running Veloxity as a ROSflight SIL board replacement"
+
+[[bin]]
+name = "veloxity_sil_board"
+path = "src/main.rs"
+
+[dependencies]
+sim = { path = "../firmware" }
+veloxity_ros_msgs = { path = "../msgs" }
+
+anyhow = "1"
+hiroz = { version = "=0.2.0", default-features = false, features = ["humble", "rmw-zenoh", "config-builders"] }
+# `compat_msgs` hand-writes one message type, which hiroz deserializes through
+# `SerdeCdrSerdes`.
+serde = { version = "1", features = ["derive"] }
+# serde_yaml over yaml-rust2: its `Value::Number` keeps the integer/float
+# distinction that ROS 2 parameter typing turns on (`100` is an integer
+# parameter, `100.0` a double one) instead of handing back the raw text to
+# re-resolve by hand, and its scalar resolution is the YAML 1.2 core schema —
+# the same rule `rcl_yaml_param_parser` applies, so `yes`/`on` stay strings.
+# It is archived upstream; it is also feature-frozen and dependency-light, and
+# the parsing surface here is a few hundred bytes of node-parameter YAML.
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[lints]
+workspace = true

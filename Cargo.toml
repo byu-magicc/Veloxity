@@ -9,6 +9,8 @@ members = [
   "platforms/rp2350",
   "platforms/stm_32",
   "sim/firmware",
+  "sim/msgs",
+  "sim/node",
   "xtask",
 ]
 default-members = [

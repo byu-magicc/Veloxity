@@ -2,16 +2,26 @@
 <package format="3">
   <name>veloxity_sil_board_shim</name>
   <version>0.1.0</version>
-  <description>ROS 2 rclcpp shim for running Veloxity as a ROSflight SIL board replacement.</description>
+  <description>ROS 2 packaging for the pure-Rust veloxity_sil_board node, which runs Veloxity as a ROSflight SIL board replacement.</description>
   <maintainer email="dev@example.com">Veloxity Developers</maintainer>
   <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>rosflight_msgs</depend>
-  <depend>sensor_msgs</depend>
-  <depend>std_srvs</depend>
+  <!--
+    The node is a Rust binary built by cargo (`sim/node`, crate
+    veloxity_sil_node) with its own generated message types, so nothing here is
+    a build dependency any more. These stay as exec dependencies so the
+    interface packages are on the overlay for anything inspecting the graph at
+    runtime — `ros2 topic echo /sim/pwm_output`, `ros2 service call
+    /sil_board/run`, and the ROS 2 tooling behind them.
+  -->
+  <exec_depend>rosflight_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+
+  <!-- scripts/verified_param_loader.py -->
+  <exec_depend>rclpy</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

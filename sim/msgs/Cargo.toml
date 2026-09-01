@@ -1,0 +1,20 @@
+[package]
+name = "veloxity_ros_msgs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hiroz = { version = "=0.2.0", default-features = false, features = ["humble", "rmw-zenoh", "config-builders"] }
+hiroz-msgs = { version = "=0.2.0", default-features = false, features = ["humble", "std_srvs", "sensor_msgs", "std_msgs", "geometry_msgs", "rcl_interfaces"] }
+hiroz-cdr = "=0.2.0"
+byteorder = "1"
+serde = { version = "1", features = ["derive"] }
+smart-default = "0.7"
+zenoh-buffers = "1"
+
+[build-dependencies]
+hiroz-codegen = "=0.2.0"
+anyhow = "1"
+
+[lints]
+workspace = true

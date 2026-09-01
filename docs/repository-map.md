@@ -50,7 +50,8 @@ The workspace is declared in `Cargo.toml`.
 | --- | --- |
 | `crates/veloxity_core` | `no_std` flight stack: params, state machine, sensors, estimator, controller, mixer, PWM, telemetry scheduling, and the `World` scheduler. |
 | `comms/veloxity_mavlink` | MAVLink parser and ROSflight MAVLink adapter implementing `CommInterface`. |
-| `sim/firmware` | Host-side Rust firmware static library and FFI boundary for the ROS 2 shim. |
+| `sim/firmware` | Host-side Rust firmware library, exposing the `sim::runtime::SimFirmware` handle the ROS 2 node drives in-process (no FFI boundary). |
+| `sim/node` | `veloxity_sil_node`: the pure-Rust Hiroz ROS 2 node (binary `veloxity_sil_board`) that used to be the C++ `veloxity_sil_board_shim`. |
 | `boards/pico2w` | RP2350/Pico 2 W board firmware and hardware probes. |
 | `boards/nucleo` | Nucleo-H753ZI board firmware. |
 | `boards/pixracerpro` | Pixracer Pro board firmware. |
@@ -86,15 +87,27 @@ command handling; `veloxity_mavlink` parses and emits MAVLink frames.
 
 ### Simulation
 
-The simulator is split in two parts: the Veloxity firmware written in Rust, and a ROS2 node written in C++. `sim/firmware` runs the Veloxity flight-control code on the host computer. It provides simulated implementations of the hardware interfaces used by `veloxity_core`, including sensor input and PWM output. It also handles MAVLink communication and simulated parameter storage.
+The simulator is a pure-Rust ROS 2 node running the Veloxity firmware in the same process — no C++,
+no FFI boundary. `sim/firmware` runs the Veloxity flight-control code on the host computer and
+exposes it through the safe `sim::runtime::SimFirmware` handle. It provides simulated
+implementations of the hardware interfaces used by `veloxity_core`, including sensor input and PWM
+output. It also handles MAVLink communication and simulated parameter storage.
 
-The C++ node starts the Rust firmware by calling `veloxity_sim_create` to construct the Velxoity `World` struct and start a Rust thread that continuously runs the firmware scheduler at 400hz. the C++ ROS2 node is returned a pointer that identifies the newly created firmware instance.
+`sim/node` (crate `veloxity_sil_node`, binary `veloxity_sil_board`) starts the firmware by calling
+`SimFirmware::new()`, which constructs the Veloxity `World` and starts a Rust thread that
+continuously runs the firmware scheduler at 400hz. `SimFirmware::new()` returns the handle itself
+(or a descriptive `anyhow::Error`) rather than an opaque pointer, since there is no ABI to cross.
 
-The C++ node then passes that pointer to the other Rust functions. It uses the function `veloxity_sim_set_sensors` to provide sensor readings, `veloxity_sim_sync_latest_imu` to wait until the newest IMU reading has been processsed, and the function `veloxity_sim_get_pwm` to read the resulting PWM outputs.
+The node then calls methods on that handle: `set_sensors` to provide sensor readings,
+`sync_latest_imu` to wait until the newest IMU reading has been processed, and `pwm` to read the
+resulting PWM outputs. Dropping the handle on node shutdown stops the worker thread and joins it.
 
-When this ROS2 node shuts down, it calls `veloxity_sim_destroy` to stop and delete the firmware instance.
-
-`sim/ros2/veloxity_sil_board_shim` bridges ROS2 sensor topics into the firmware, and PWM output from the firmware back to ROS2. For instance, ROSflight calls the `sil_board/run` servic, causing this node waits for the latest IMU reading to be processed. Upon receiving IMU data, this node then waits for the PWM outputs from the firmware and bridges them back to `sim/pwm_output`.
+`sim/ros2/veloxity_sil_board_shim` is the colcon package that ships the `veloxity_sil_board` binary,
+its launch files, and its config — cargo-only, no C++ left to build. It bridges ROS2 sensor topics
+into the firmware, and PWM output from the firmware back to ROS2. For instance, ROSflight calls the
+`sil_board/run` service, causing the node to wait for the latest IMU reading to be processed. Upon
+receiving IMU data, the node then waits for the PWM outputs from the firmware and bridges them back
+to `sim/pwm_output`.
 
 ### Board Crates
 

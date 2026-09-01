@@ -45,8 +45,8 @@ source scripts/build_and_source_ros2_shim.zsh
 
 This builds:
 
-- `target/debug/libsim.a`: Rust sim firmware static library
-- `veloxity_sil_board_shim`: ROS 2 C++ FFI bridge
+- `target/release/veloxity_sil_board`: the Rust SIL board node
+- `veloxity_sil_board_shim`: the ROS 2 package that installs it
 
 Optional compile-only check:
 
