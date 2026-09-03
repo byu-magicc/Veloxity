@@ -3821,6 +3821,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rosflight-hiroz"
+version = "0.1.0"
+source = "git+ssh://git@github.com/jusevitch/rosflight-hiroz.git?rev=563ea7e37e13b9f922779885f760a219fdae3dd4#563ea7e37e13b9f922779885f760a219fdae3dd4"
+dependencies = [
+ "hiroz",
+ "hiroz-msgs",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rp-pac"
 version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5547,6 +5562,7 @@ dependencies = [
  "hiroz-cdr",
  "hiroz-codegen",
  "hiroz-msgs",
+ "rosflight-hiroz",
  "serde",
  "smart-default",
  "zenoh-buffers",
@@ -5558,7 +5574,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "hiroz",
- "serde",
  "serde_yaml",
  "sim",
  "tokio",

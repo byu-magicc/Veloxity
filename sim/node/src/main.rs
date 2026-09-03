@@ -54,11 +54,10 @@ use veloxity_ros_msgs::geometry_msgs::Vector3 as RosVector3;
 use veloxity_ros_msgs::ros::rosflight_msgs::{
     Airspeed, Barometer, BatteryStatus, GNSS, PwmOutput, RCRaw,
 };
-use veloxity_ros_msgs::sensor_msgs::{Imu, MagneticField, Temperature};
+use veloxity_ros_msgs::sensor_msgs::{Imu, MagneticField, Range, Temperature};
 use veloxity_ros_msgs::std_msgs::Header;
 use veloxity_ros_msgs::std_srvs::{TriggerResponse, srv::Trigger};
 
-use veloxity_sil_node::compat_msgs::RangeCompat;
 use veloxity_sil_node::shim::context::{self, NodeHandle};
 
 /// The compiled-in node name, overridable with `__node:=`. The launch files
@@ -195,10 +194,7 @@ async fn run(handle: NodeHandle) -> anyhow::Result<()> {
     let baro_subscription = subscribe!(handle, Barometer, BARO_TOPIC);
     let gnss_subscription = subscribe!(handle, GNSS, GNSS_TOPIC);
     let diff_pressure_subscription = subscribe!(handle, Airspeed, DIFF_PRESSURE_TOPIC);
-    // `RangeCompat`, not the bundled `sensor_msgs::Range`: hiroz-msgs 0.2.0
-    // generates its types from Jazzy definitions, and Jazzy's Range carries a
-    // trailing `float32 variance` that Humble's does not. See `compat_msgs`.
-    let range_subscription = subscribe!(handle, RangeCompat, RANGE_TOPIC);
+    let range_subscription = subscribe!(handle, Range, RANGE_TOPIC);
     let battery_subscription = subscribe!(handle, BatteryStatus, BATTERY_TOPIC);
     let rc_subscription = subscribe!(handle, RCRaw, RC_TOPIC);
 

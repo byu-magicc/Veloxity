@@ -13,10 +13,7 @@ sim = { path = "../firmware" }
 veloxity_ros_msgs = { path = "../msgs" }
 
 anyhow = "1"
-hiroz = { version = "=0.2.0", default-features = false, features = ["humble", "rmw-zenoh", "config-builders"] }
-# `compat_msgs` hand-writes one message type, which hiroz deserializes through
-# `SerdeCdrSerdes`.
-serde = { version = "1", features = ["derive"] }
+hiroz = { version = "=0.2.0", default-features = false, features = ["jazzy", "rmw-zenoh", "config-builders"] }
 # serde_yaml over yaml-rust2: its `Value::Number` keeps the integer/float
 # distinction that ROS 2 parameter typing turns on (`100` is an integer
 # parameter, `100.0` a double one) instead of handing back the raw text to

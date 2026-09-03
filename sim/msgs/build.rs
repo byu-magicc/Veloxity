@@ -32,7 +32,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
-    hiroz_codegen::generate_user_messages(&out_dir, true)?;
+    // `false` = Jazzy, real RIHS01 hashes resolved from hiroz-codegen's
+    // bundled Jazzy assets (must match rosidl's on the C++ side; guarded by
+    // a tripwire test added separately).
+    hiroz_codegen::generate_user_messages(&out_dir, false)?;
 
     Ok(())
 }

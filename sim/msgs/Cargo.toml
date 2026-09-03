@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-hiroz = { version = "=0.2.0", default-features = false, features = ["humble", "rmw-zenoh", "config-builders"] }
-hiroz-msgs = { version = "=0.2.0", default-features = false, features = ["humble", "std_srvs", "sensor_msgs", "std_msgs", "geometry_msgs", "rcl_interfaces"] }
+hiroz = { version = "=0.2.0", default-features = false, features = ["jazzy", "rmw-zenoh", "config-builders"] }
+hiroz-msgs = { version = "=0.2.0", default-features = false, features = ["jazzy", "std_srvs", "sensor_msgs", "std_msgs", "geometry_msgs", "rcl_interfaces"] }
 hiroz-cdr = "=0.2.0"
 byteorder = "1"
 serde = { version = "1", features = ["derive"] }
@@ -15,6 +15,13 @@ zenoh-buffers = "1"
 [build-dependencies]
 hiroz-codegen = "=0.2.0"
 anyhow = "1"
+
+[dev-dependencies]
+# Type-hash tripwire only (tests/type_hashes.rs); not needed by the generated
+# code itself. Not a `[workspace.dependencies]` entry here (unlike
+# rosplane_rs/roscopter_rs) -- sim/node does not depend on rosflight-hiroz
+# yet, so this repeats the same git+rev pin those two repos use.
+rosflight-hiroz = { git = "ssh://git@github.com/jusevitch/rosflight-hiroz.git", rev = "563ea7e37e13b9f922779885f760a219fdae3dd4" }
 
 [lints]
 workspace = true
