@@ -1,7 +1,7 @@
 [project]
 site_name = "Veloxity Documentation"
 site_description = "High-level guides and low-level API documentation for the Veloxity firmware."
-site_url = "https://magicc-safety.github.io/Veloxity/"
+site_url = "https://magicc.byu.edu/Veloxity/"
 
 nav = [
     { "Welcome" = "README.md" },
