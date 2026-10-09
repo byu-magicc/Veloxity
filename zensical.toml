@@ -93,3 +93,21 @@ pygments_lang_class = true
 [project.markdown_extensions.pymdownx.snippets]
 [project.markdown_extensions.pymdownx.details]
 [project.markdown_extensions.gfm_admonition]
+
+# Internal notes and the experimental Pico 2 W pages stay in the repo
+# but are not published to the docs site.
+[project.plugins.exclude]
+glob = [
+    # Internal notes
+    "docs.md",
+    "hardware-bringup-notes.md",
+    "pixracerpro-runtime-diagnostics.md",
+    "tutorials/quadx-firmware-parameter-incident.md",
+    "tutorials/hardware-exp2-roscopter-startup.md",
+    # Pico 2 W (experimental, deliberately unlinked)
+    "boards/rp2350-pico2w.md",
+    "pico2w-esc-imu-pinout.md",
+    "tutorials/pico2w-sensor-bringup.md",
+    # Orphan index that only lists the pages above
+    "tutorials/README.md",
+]
