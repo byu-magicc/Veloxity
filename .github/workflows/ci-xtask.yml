@@ -1,0 +1,37 @@
+name: cargo xtask CI
+
+on:
+  pull_request:
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        command: [check-host, test-host, build-sim-lib, clean-generated]
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo xtask ${{ matrix.command }}
+
+  board:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        command: [check-board, build-board]
+        board: [pixracerpro, nucleo, pico2w]
+        include:
+          # You will need to replace the `target` strings below with the exact 
+          # targets your boards use (e.g., thumbv7em-none-eabihf).
+          - board: pixracerpro
+            target: thumbv7em-none-eabihf 
+          - board: nucleo
+            target: thumbv7em-none-eabihf
+          - board: pico2w
+            target: thumbv8m.main-none-eabihf
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          rustup target add ${{ matrix.target }}
+          cargo xtask ${{ matrix.command }} ${{ matrix.board }}

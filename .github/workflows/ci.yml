@@ -1,0 +1,51 @@
+name: Rust CI
+
+on: [pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format:
+    name: Check Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check Formatting
+        # Runs once for the entire workspace
+        run: cargo fmt --all --check
+
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    needs: format
+    strategy:
+      fail-fast: false # Prevents one board failing from cancelling the others
+      matrix:
+        include:
+          # You will need to replace the `target` strings below with the exact 
+          # targets your boards use (e.g., thumbv7em-none-eabihf).
+          - member: pixracerpro
+            target: thumbv7em-none-eabihf 
+          - member: nucleo
+            target: thumbv7em-none-eabi
+          - member: sim
+            target: x86_64-unknown-linux-gnu
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install Rust target
+      run: rustup target add ${{ matrix.target }}
+
+    - name: Build
+      # -p specifies the workspace member.
+      # --target overrides any missing .cargo/config.toml configurations.
+      run: cargo build -p ${{ matrix.member }} --target ${{ matrix.target }} --verbose
+
+    - name: Run tests
+      # You generally cannot run standard `cargo test` on cross-compiled embedded targets 
+      # without an emulator like QEMU. This restricts tests to host-native crates like `sim`.
+      # Using `--test-threads=1` prevents unpredicatable behavior from parallel mutex modification.
+      if: matrix.target == 'x86_64-unknown-linux-gnu'
+      run: cargo test -p ${{ matrix.member }} --verbose -- --test-threads=1
