@@ -8,7 +8,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 
 set(VELOXITY_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../..")
-set(VELOXITY_SIM_STATICLIB "${VELOXITY_REPO_ROOT}/target/debug/libsim.a")
+set(VELOXITY_SIM_STATICLIB "${VELOXITY_REPO_ROOT}/target/release/libsim.a")
 
 add_custom_target(
   veloxity_sim_staticlib ALL
