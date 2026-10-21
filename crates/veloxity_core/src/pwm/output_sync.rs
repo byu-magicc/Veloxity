@@ -285,6 +285,7 @@ mod tests {
         disable_all_count: usize,
         flush_count: usize,
         send_count: usize,
+        last_commands: [f64; PWM_OUTPUT_CHANNELS],
     }
 
     impl TestPwm {
@@ -295,6 +296,7 @@ mod tests {
                 disable_all_count: 0,
                 flush_count: 0,
                 send_count: 0,
+                last_commands: [f64::NAN; PWM_OUTPUT_CHANNELS],
             }
         }
     }
@@ -340,9 +342,11 @@ mod tests {
         fn send_commands<Board: BoardIo>(
             &mut self,
             _board: &mut Board,
-            _commands: &[f64],
+            commands: &[f64],
         ) -> Result<(), PwmError> {
             self.send_count += 1;
+            let len = commands.len().min(PWM_OUTPUT_CHANNELS);
+            self.last_commands[..len].copy_from_slice(&commands[..len]);
             Ok(())
         }
     }
@@ -549,6 +553,98 @@ mod tests {
             Ok(true)
         );
         assert_eq!(pwm.send_count, 1);
+        assert_eq!(pwm.last_commands, [0.0; PWM_OUTPUT_CHANNELS]);
+    }
+
+    #[test]
+    fn safe_disarmed_command_holds_only_servos_at_mid_range() {
+        assert_eq!(safe_disarmed_command::<f64>(MixerOutputType::Motor), 0.0);
+        assert_eq!(safe_disarmed_command::<f64>(MixerOutputType::Gpio), 0.0);
+        assert_eq!(safe_disarmed_command::<f64>(MixerOutputType::Aux), 0.0);
+        assert_eq!(safe_disarmed_command::<f64>(MixerOutputType::Servo), 0.5);
+    }
+
+    #[test]
+    fn send_disarmed_commands_drives_untyped_channels_low_and_centers_servos() {
+        let mut board = TestBoard { now_us: 0 };
+        let mut pwm = TestPwm::new(true);
+
+        assert_eq!(
+            pwm.send_disarmed_commands(&mut board, &[MixerOutputType::Servo]),
+            Ok(())
+        );
+
+        // Channel 0 is a servo; channels 1-3 are within the driver but have no
+        // mixer type, and the rest are beyond the driver's channel count.
+        let mut expected = [0.0; PWM_OUTPUT_CHANNELS];
+        expected[0] = 0.5;
+        assert_eq!(pwm.last_commands, expected);
+    }
+
+    #[test]
+    fn custom_mixer_with_unassigned_outputs_keeps_disarmed_outputs_low() {
+        use crate::mixer::Mixer as _;
+
+        // Selecting the custom mixer before any PRI_MIXER_OUT_* parameter has
+        // arrived leaves every mixer output typed as Aux.
+        let mut params = Params::new();
+        params.set_by_id(ParamId::PARAM_GYRO_X_BIAS, ParamValue::Float(0.1));
+        params.set_by_id(ParamId::PARAM_CHANNEL_OUTPUT_MASK, ParamValue::Int(-1));
+        params.set_by_id(ParamId::PARAM_PRIMARY_MIXER, ParamValue::Int(11));
+        let mut mixer = crate::vehicle::quadrotor::mixer::<f64>(&params);
+        assert!(
+            mixer
+                .output_types()
+                .iter()
+                .all(|output_type| *output_type == MixerOutputType::Aux)
+        );
+        let mut state = StateManager::new();
+        state.update(Event::INITIALIZED, &params);
+        assert!(!state.is_armed());
+
+        let outputs: [f64; PWM_OUTPUT_CHANNELS] =
+            compose_pwm_outputs(&[0.9; 10], mixer.output_types(), None, &state, &params);
+        assert_eq!(outputs, [0.0; PWM_OUTPUT_CHANNELS]);
+
+        let mut board = TestBoard { now_us: 0 };
+        let mut pwm = TestPwm::new(true);
+        let enabled = PwmOutputState::new(true);
+        assert_eq!(
+            write_pwm_commands(
+                &mut board,
+                &mut pwm,
+                &enabled,
+                &outputs,
+                mixer.output_types(),
+                &state
+            ),
+            Ok(true)
+        );
+        assert_eq!(pwm.last_commands, [0.0; PWM_OUTPUT_CHANNELS]);
+
+        // An output explicitly assigned as a servo is still centered.
+        params.set_by_id(ParamId::PARAM_PRIMARY_MIXER_OUTPUT_3, ParamValue::Int(1));
+        mixer.on_param_changed(&params, ParamId::PARAM_PRIMARY_MIXER_OUTPUT_3);
+        assert_eq!(mixer.output_types()[3], MixerOutputType::Servo);
+
+        let outputs: [f64; PWM_OUTPUT_CHANNELS] =
+            compose_pwm_outputs(&[0.9; 10], mixer.output_types(), None, &state, &params);
+        let mut expected = [0.0; PWM_OUTPUT_CHANNELS];
+        expected[3] = 0.5;
+        assert_eq!(outputs, expected);
+
+        assert_eq!(
+            write_pwm_commands(
+                &mut board,
+                &mut pwm,
+                &enabled,
+                &outputs,
+                mixer.output_types(),
+                &state
+            ),
+            Ok(true)
+        );
+        assert_eq!(pwm.last_commands, expected);
     }
 
     #[test]
@@ -621,7 +717,7 @@ mod tests {
         );
 
         assert_eq!(outputs[4], 0.0);
-        assert_eq!(outputs[6], 0.5);
+        assert_eq!(outputs[6], 0.0);
     }
 
     #[test]
@@ -648,7 +744,7 @@ mod tests {
         assert!((outputs[0] - 0.2).abs() < 1e-6);
         assert_eq!(outputs[1], 0.5);
         assert_eq!(outputs[2], 1.0);
-        assert_eq!(outputs[3], 0.5);
+        assert_eq!(outputs[3], 0.0);
     }
 
     #[test]

@@ -137,7 +137,7 @@ pub trait PwmDriver<R: FlightFloat> {
         output_types: &[MixerOutputType],
     ) -> Result<(), PwmError> {
         let mut commands =
-            [<R as FlightFloat>::from_f32(0.5); crate::pwm::output_sync::PWM_OUTPUT_CHANNELS];
+            [<R as FlightFloat>::from_f32(0.0); crate::pwm::output_sync::PWM_OUTPUT_CHANNELS];
         for (channel, command) in commands.iter_mut().enumerate().take(self.len()) {
             let output_type = output_types
                 .get(channel)
@@ -149,10 +149,16 @@ pub trait PwmDriver<R: FlightFloat> {
     }
 }
 
+/// Normalized command an output holds while disarmed or masked off.
+///
+/// Servos are held at mid-range so control surfaces stay centered.
+/// All other output types are held low.
 pub fn safe_disarmed_command<R: FlightFloat>(output_type: MixerOutputType) -> R {
     match output_type {
-        MixerOutputType::Motor | MixerOutputType::Gpio => <R as FlightFloat>::from_f32(0.0),
-        MixerOutputType::Aux | MixerOutputType::Servo => <R as FlightFloat>::from_f32(0.5),
+        MixerOutputType::Motor | MixerOutputType::Gpio | MixerOutputType::Aux => {
+            <R as FlightFloat>::from_f32(0.0)
+        }
+        MixerOutputType::Servo => <R as FlightFloat>::from_f32(0.5),
     }
 }
 

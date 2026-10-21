@@ -1931,6 +1931,77 @@ fn world_control_stage_propagates_custom_zero_pwm_rates() {
 }
 
 #[test]
+fn world_keeps_motor_outputs_low_while_custom_mixer_params_load_disarmed() {
+    use crate::mixer::Mixer as _;
+
+    let mut params = Params::new();
+    params.set_by_id(ParamId::PARAM_GYRO_X_BIAS, ParamValue::Float(0.1));
+    params.set_by_id(ParamId::PARAM_CHANNEL_OUTPUT_MASK, ParamValue::Int(-1));
+    let mut world = test_world_with_params(params);
+    assert!(world.run_pwm_output_stage());
+    world.processed_sensors.imu = Some(crate::packets::ImuPacket {
+        header: crate::packets::RosflightPacketHeader {
+            timestamp: 1,
+            status: 0,
+        },
+        accel: [0.0, 0.0, -9.80665],
+        gyro: [0.0, 0.0, 0.0],
+        temperature: 25.0,
+        seq: 1,
+    });
+    assert!(!world.run_control_stages_if_new_imu());
+
+    // Replay a parameter file that selects the custom mixer before it marks
+    // outputs 0-3 as motors, checking the outputs after every step.
+    let steps = [
+        (ParamId::PARAM_PRIMARY_MIXER, 11),
+        (ParamId::PARAM_PRIMARY_MIXER_OUTPUT_0, 2),
+        (ParamId::PARAM_PRIMARY_MIXER_OUTPUT_1, 2),
+        (ParamId::PARAM_PRIMARY_MIXER_OUTPUT_2, 2),
+        (ParamId::PARAM_PRIMARY_MIXER_OUTPUT_3, 2),
+    ];
+    for (step, (id, value)) in steps.into_iter().enumerate() {
+        param_service::set_param_and_emit_change(
+            &mut world.params,
+            &mut world.param_events.changes,
+            id,
+            ParamValue::Int(value),
+        );
+        world.apply_param_reactions();
+        if step == 0 {
+            assert!(
+                world.mixer.output_types()[..4]
+                    .iter()
+                    .all(|output_type| *output_type == crate::mixer::MixerOutputType::Aux)
+            );
+        }
+
+        world
+            .processed_sensors
+            .imu
+            .as_mut()
+            .unwrap()
+            .header
+            .timestamp = 2 + step as u64;
+        let send_count = world.pwm.send_count;
+        assert!(world.run_control_stages_if_new_imu());
+        assert!(!world.state.is_armed());
+        assert_eq!(world.pwm.send_count, send_count + 1);
+        assert_eq!(world.pwm.last_commands[..4], [0.0; 4], "step {step}");
+        assert_eq!(
+            world.control_pipeline.latest_pwm_outputs[..4],
+            [0.0; 4],
+            "step {step}"
+        );
+    }
+    assert!(
+        world.mixer.output_types()[..4]
+            .iter()
+            .all(|output_type| *output_type == crate::mixer::MixerOutputType::Motor)
+    );
+}
+
+#[test]
 fn world_control_stage_reconfigures_pwm_rates_after_mixer_param_change() {
     let mut params = Params::new();
     params.set_by_id(ParamId::PARAM_GYRO_X_BIAS, ParamValue::Float(0.1));
