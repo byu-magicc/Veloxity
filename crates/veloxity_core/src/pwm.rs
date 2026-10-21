@@ -136,8 +136,6 @@ pub trait PwmDriver<R: FlightFloat> {
         board: &mut B,
         output_types: &[MixerOutputType],
     ) -> Result<(), PwmError> {
-        // Channels without a mixer output type are unassigned, so they idle low
-        // like any other Aux output rather than at mid-range.
         let mut commands =
             [<R as FlightFloat>::from_f32(0.0); crate::pwm::output_sync::PWM_OUTPUT_CHANNELS];
         for (channel, command) in commands.iter_mut().enumerate().take(self.len()) {
@@ -153,10 +151,8 @@ pub trait PwmDriver<R: FlightFloat> {
 
 /// Normalized command an output holds while disarmed or masked off.
 ///
-/// Only servos are held at mid-range so control surfaces stay centered. Aux
-/// outputs are not assigned by the mixer and may become motors once the
-/// remaining custom-mixer parameters arrive, so they are driven low like
-/// motors and GPIO.
+/// Servos are held at mid-range so control surfaces stay centered.
+/// All other output types are held low.
 pub fn safe_disarmed_command<R: FlightFloat>(output_type: MixerOutputType) -> R {
     match output_type {
         MixerOutputType::Motor | MixerOutputType::Gpio | MixerOutputType::Aux => {
