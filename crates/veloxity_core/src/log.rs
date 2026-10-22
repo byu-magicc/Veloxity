@@ -30,8 +30,8 @@ impl LogString {
     }
 
     pub fn as_str(&self) -> &str {
-        // SAFETY: We only write valid UTF-8 via fmt::Write
-        unsafe { core::str::from_utf8_unchecked(&self.buffer[..self.len]) }
+        // write_str only stores whole characters, so this never falls back.
+        core::str::from_utf8(&self.buffer[..self.len]).unwrap_or("")
     }
 }
 
@@ -39,7 +39,11 @@ impl fmt::Write for LogString {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let bytes = s.as_bytes();
         let remaining = MAX_LOG_LEN - self.len;
-        let copy_len = bytes.len().min(remaining);
+        let mut copy_len = bytes.len().min(remaining);
+        // Truncate on a character boundary so the buffer stays valid UTF-8.
+        while !s.is_char_boundary(copy_len) {
+            copy_len -= 1;
+        }
 
         // Copy data
         self.buffer[self.len..self.len + copy_len].copy_from_slice(&bytes[..copy_len]);
@@ -181,4 +185,24 @@ macro_rules! log_error {
 #[macro_export]
 macro_rules! log_debug {
     ($($arg:tt)*) => { $crate::log::Logger::debug(format_args!($($arg)*))};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::fmt::Write;
+
+    #[test]
+    fn truncation_keeps_whole_characters() {
+        // 'é' is two bytes; after "a" the 50-byte buffer has one byte left for the last 'é'.
+        let mut message = LogString::new();
+        message.write_str("a").unwrap();
+        let mut result = Ok(());
+        while result.is_ok() {
+            result = message.write_str("é");
+        }
+        assert_eq!(message.len, MAX_LOG_LEN - 1);
+        assert_eq!(message.as_str().len(), message.len);
+        assert!(message.as_str()[1..].chars().all(|c| c == 'é'));
+    }
 }

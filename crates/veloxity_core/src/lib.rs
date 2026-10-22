@@ -1,4 +1,7 @@
 #![no_std]
+// The flight core contains no unsafe code; the opt-in diagnostics feature exports
+// counters with `#[unsafe(no_mangle)]`, so it is exempt.
+#![cfg_attr(not(feature = "runtime-diagnostics"), forbid(unsafe_code))]
 pub mod battery;
 pub mod board;
 pub mod comm;
